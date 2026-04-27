@@ -359,6 +359,14 @@ def normalize_zero_one(A):
     A /= A.max(1, keepdim=True)[0]
     return A
 
+def log_experiment_data(save_path, filename, data_dict, epoch):
+    file_path = os.path.join(save_path, filename)
+    first_row = not os.path.exists(file_path)
+    with open(file_path, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['epoch'] + list(data_dict.keys()))
+        if first_row: writer.writeheader()
+        data_dict['epoch'] = epoch
+        writer.writerow(data_dict)
 
 if __name__ == '__main__':
     pass

@@ -413,19 +413,15 @@ class MCLEA:
         return total_loss
 
     def train(self):
-
-        # print args
+        # 1. 保留原版打印参数和初始化
         pprint(self.args)
-
-        # Train
         print("[start training...] ")
         t_total = time.time()
         new_links = []
-        epoch_KE, epoch_CG = 0, 0
+        epoch_KE, epoch_CG = 0, 0 # 保留计数器
 
         bsize = self.args.bsize
         device = self.device
-
         self.input_idx = torch.LongTensor(np.arange(self.ENT_NUM)).to(device)
 
         for epoch in range(self.args.epochs):
@@ -449,12 +445,15 @@ class MCLEA:
                                                                     self.name_features,
                                                                     self.char_features)
 
-            loss_sum_gcn, loss_sum_rel, loss_sum_att, loss_sum_img, loss_sum_all = 0, 0, 0, 0, 0
-
+            # 【日志记录】初始化累加器
+            sum_loss_joi, sum_in_loss, sum_align_loss, loss_sum_all = 0, 0, 0, 0
             epoch_CG += 1
 
             # manual batching
             np.random.shuffle(self.train_ill)
+            # 计算总 batch 数用于平均
+            num_batches = math.ceil(self.train_ill.shape[0] / bsize) 
+
             for si in np.arange(0, self.train_ill.shape[0], bsize):
                 #  ICL loss for joint embedding
                 loss_joi = self.criterion_cl(joint_emb, self.train_ill[si:si + bsize])
@@ -471,20 +470,27 @@ class MCLEA:
 
                 loss_all.backward(retain_graph=True)
 
-                loss_sum_all = loss_sum_all + loss_all.item()
+                # 【日志记录】累加各分项 Loss
+                sum_loss_joi += loss_joi.item()
+                sum_in_loss += in_loss.item()
+                sum_align_loss += align_loss.item()
+                loss_sum_all += loss_all.item()
 
             self.optimizer.step()
+
+            # 【实验记录保存】每个 Epoch 结束后存入 CSV
+            train_log = {
+                'loss_joi': sum_loss_joi / num_batches,
+                'in_loss': sum_in_loss / num_batches,
+                'align_loss': sum_align_loss / num_batches,
+                'total_loss': loss_sum_all / num_batches
+            }
+            log_experiment_data(self.args.save_path, "baseline_train_loss.csv", train_log, epoch)
+
             print("[epoch {:d}] loss_all: {:f}, time: {:.4f} s".format(epoch, loss_sum_all, time.time() - t_epoch))
 
-            # semi-supervised learning
             if epoch >= self.args.il_start and (epoch + 1) % self.args.semi_learn_step == 0 and self.args.il:
-                # predict links
                 preds_l, preds_r = self.semi_supervised_learning()
-
-                # if args.csls is True:
-                #    distance = 1 - csls_sim(1 - distance, args.csls_k)
-                # print (len(preds_l), len(preds_r))
-
                 if (epoch + 1) % (self.args.semi_learn_step * 10) == self.args.semi_learn_step:
                     new_links = [(self.left_non_train[i], self.right_non_train[p]) for i, p in enumerate(preds_l)
                                  if preds_r[p] == i]  # Nearest neighbors
@@ -496,40 +502,19 @@ class MCLEA:
 
             if epoch >= self.args.il_start and (epoch + 1) % (self.args.semi_learn_step * 10) == 0 and len(
                     new_links) != 0 and self.args.il:
-                # get similarity of newly linked pairs
-                # if len(new_links) > 1000:
-                #    left_inds = np.array(new_links, dtype=np.int32)[:,0]
-                #    right_inds = np.array(new_links, dtype=np.int32)[:,1]
-                #    emb_sim = final_emb[left_inds].mm(final_emb[right_inds].t())
-                #    two_d_indices = get_topk_indices(emb_sim, K=1000)
-                #    new_links_elect = []
-                #    for inds in two_d_indices:
-                #        new_links_elect.append((left_inds[inds[0]], right_inds[inds[1]]))
-                # else:
                 new_links_elect = new_links
                 print("\n#new_links_elect:", len(new_links_elect))
-
-                # if len(new_links) >= 5000: new_links = random.sample(new_links, 5000)
                 self.train_ill = np.vstack((self.train_ill, np.array(new_links_elect)))
-                print("train_ill.shape:", self.train_ill.shape)
-
                 num_true = len([nl for nl in new_links_elect if nl in self.test_ill_])
                 print("#true_links: %d" % num_true)
-                print("true link ratio: %.1f%%" % (100 * num_true / len(new_links_elect)))
-
-                # remove from left/right_non_train
                 for nl in new_links_elect:
                     self.left_non_train.remove(nl[0])
                     self.right_non_train.remove(nl[1])
-                print("#entity not in train set: %d (left) %d (right)" % (
-                    len(self.left_non_train), len(self.right_non_train)))
-
                 new_links = []
 
             if self.args.cuda and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            # Test
             if (epoch + 1) % self.args.check_point == 0:
                 print("\n[epoch {:d}] checkpoint!".format(epoch))
                 self.test(epoch)
@@ -549,6 +534,7 @@ class MCLEA:
             self.multi_loss_layer.eval()
             self.align_multi_loss_layer.eval()
 
+            # 1. 前向传播
             gph_emb, img_emb, rel_emb, att_emb, \
             name_emb, char_emb, joint_emb = self.multimodal_encoder(self.input_idx,
                                                                     self.adj,
@@ -558,29 +544,30 @@ class MCLEA:
                                                                     self.name_features,
                                                                     self.char_features)
 
+            # 2. 保留原版权重打印
             w_normalized = F.softmax(self.multimodal_encoder.fusion.weight, dim=0)
             print("normalised weights:", w_normalized.data.squeeze())
-
             inner_view_weight = torch.exp(-self.multi_loss_layer.log_vars)
             print("inner-view loss weights:", inner_view_weight.data)
             align_weight = torch.exp(-self.align_multi_loss_layer.log_vars)
             print("align loss weights:", align_weight.data)
 
             final_emb = F.normalize(joint_emb)
-
-            # top_k = [1, 5, 10, 50, 100]
             top_k = [1, 10, 50]
+
+            # 3. 数据集分支判断 (保留原版 100K 特殊处理)
             if "100" in self.args.file_dir:
                 Lvec = final_emb[self.test_left].cpu().data.numpy()
                 Rvec = final_emb[self.test_right].cpu().data.numpy()
-                acc_l2r, mean_l2r, mrr_l2r, acc_r2l, mean_r2l, mrr_r2l = multi_get_hits(Lvec, Rvec, top_k=top_k,
-                                                                                        args=self.args)
+                acc_l2r, mean_l2r, mrr_l2r, acc_r2l, mean_r2l, mrr_r2l = multi_get_hits(Lvec, Rvec, top_k=top_k, args=self.args)
+                pos_dist, neg_dist, dist_margin = 0, 0, 0 # 100K 模式下不重复计算分布指标
                 del final_emb
                 gc.collect()
             else:
                 acc_l2r = np.zeros((len(top_k)), dtype=np.float32)
                 acc_r2l = np.zeros((len(top_k)), dtype=np.float32)
                 test_total, test_loss, mean_l2r, mean_r2l, mrr_l2r, mrr_r2l = 0, 0., 0., 0., 0., 0.
+                
                 if self.args.dist == 2:
                     distance = pairwise_distances(final_emb[self.test_left], final_emb[self.test_right])
                 elif self.args.dist == 1:
@@ -593,12 +580,20 @@ class MCLEA:
                 if self.args.csls is True:
                     distance = 1 - csls_sim(1 - distance, self.args.csls_k)
 
+                # 【新增：指标记录所需的分布数据】
+                pos_dist = torch.diag(distance).mean().item()
+                mask_neg = 1 - torch.eye(distance.size(0)).to(self.device)
+                neg_dist = (distance * mask_neg).sum() / mask_neg.sum()
+                neg_dist = neg_dist.item()
+                dist_margin = neg_dist - pos_dist
+
                 if epoch + 1 == self.args.epochs:
                     to_write = []
                     test_left_np = self.test_left.cpu().numpy()
                     test_right_np = self.test_right.cpu().numpy()
                     to_write.append(["idx", "rank", "query_id", "gt_id", "ret1", "ret2", "ret3"])
 
+                # L2R 计算
                 for idx in range(self.test_left.shape[0]):
                     values, indices = torch.sort(distance[idx, :], descending=False)
                     rank = (indices == idx).nonzero().squeeze().item()
@@ -607,24 +602,12 @@ class MCLEA:
                     for i in range(len(top_k)):
                         if rank < top_k[i]:
                             acc_l2r[i] += 1
-                    # save idx, correct rank pos, and indices
                     if epoch + 1 == self.args.epochs:
-                        indices = indices.cpu().numpy()
-                        to_write.append(
-                            [idx, rank, test_left_np[idx], test_right_np[idx], test_right_np[indices[0]],
-                             test_right_np[indices[1]], test_right_np[indices[2]]])
-                if epoch + 1 == self.args.epochs:
-                    import csv
-                    # with open("logs/pred.txt", "w") as f:
-                    #     wr = csv.writer(f, dialect='excel')
-                    #     wr.writerows(to_write)
-                    save_path = self.args.save_path
-                    if not os.path.exists(save_path):
-                        os.mkdir(save_path)
-                    with open(os.path.join(save_path, "pred.txt"), "w") as f:
-                        wr = csv.writer(f, dialect='excel')
-                        wr.writerows(to_write)
+                        indices_np = indices.cpu().numpy()
+                        to_write.append([idx, rank, test_left_np[idx], test_right_np[idx], 
+                                         test_right_np[indices_np[0]], test_right_np[indices_np[1]], test_right_np[indices_np[2]]])
 
+                # R2L 计算 (原版存在，必须保留)
                 for idx in range(self.test_right.shape[0]):
                     _, indices = torch.sort(distance[:, idx], descending=False)
                     rank = (indices == idx).nonzero().squeeze().item()
@@ -634,6 +617,7 @@ class MCLEA:
                         if rank < top_k[i]:
                             acc_r2l[i] += 1
 
+                # 归一化
                 mean_l2r /= self.test_left.size(0)
                 mean_r2l /= self.test_right.size(0)
                 mrr_l2r /= self.test_left.size(0)
@@ -641,15 +625,39 @@ class MCLEA:
                 for i in range(len(top_k)):
                     acc_l2r[i] = round(acc_l2r[i] / self.test_left.size(0), 4)
                     acc_r2l[i] = round(acc_r2l[i] / self.test_right.size(0), 4)
+
+                # 保存 pred.txt
+                if epoch + 1 == self.args.epochs:
+                    import csv as csv_lib
+                    save_path = self.args.save_path
+                    if not os.path.exists(save_path): os.makedirs(save_path)
+                    with open(os.path.join(save_path, "pred.txt"), "w", newline='') as f:
+                        wr = csv_lib.writer(f, dialect='excel')
+                        wr.writerows(to_write)
+                
                 del distance, gph_emb, img_emb, rel_emb, att_emb, name_emb, char_emb, joint_emb
                 gc.collect()
-            print("l2r: acc of top {} = {}, mr = {:.3f}, mrr = {:.3f}, time = {:.4f} s ".format(top_k, acc_l2r,
-                                                                                                mean_l2r, mrr_l2r,
-                                                                                                time.time() - t_test))
-            print("r2l: acc of top {} = {}, mr = {:.3f}, mrr = {:.3f}, time = {:.4f} s \n".format(top_k, acc_r2l,
-                                                                                                  mean_r2l, mrr_r2l,
-                                                                                                  time.time() - t_test))
 
+            # 4. 【实验记录】统一在此处记录（兼容普通和100K模式）
+            w_np = w_normalized.data.squeeze().cpu().numpy()
+            test_log = {
+                'hits1': acc_l2r[0],
+                'hits10': acc_l2r[1],
+                'mrr': mrr_l2r,
+                'pos_dist': pos_dist,
+                'neg_dist': neg_dist,
+                'margin': dist_margin,
+                'w_gph': w_np[0], 'w_rel': w_np[1], 'w_att': w_np[2], 
+                'w_img': w_np[3], 'w_name': w_np[4], 'w_char': w_np[5]
+            }
+            log_experiment_data(self.args.save_path, "baseline_test_log.csv", test_log, epoch)
+
+            # 5. 保留原版打印输出
+            print("l2r: acc of top {} = {}, mr = {:.3f}, mrr = {:.3f}, time = {:.4f} s ".format(top_k, acc_l2r, mean_l2r, mrr_l2r, time.time() - t_test))
+            print("r2l: acc of top {} = {}, mr = {:.3f}, mrr = {:.3f}, time = {:.4f} s \n".format(top_k, acc_r2l, mean_r2l, mrr_r2l, time.time() - t_test))
+            
+            if self.args.cuda and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     model = MCLEA()
