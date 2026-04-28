@@ -516,20 +516,21 @@ class MCLEA:
                     if modal_count > 0:
                         mask_loss = mask_loss / modal_count
                 
+                # 计算总损失
                 loss_all = loss_joi + in_loss + align_loss + mask_loss
-                loss_all.backward() # 移除 retain_graph=True，释放计算图
-
-                # ========== 每个batch后清理显存 ==========
-                if self.args.cuda and torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
                 # 【日志记录】累加各分项 Loss
                 sum_loss_joi += loss_joi.item()
                 sum_in_loss += in_loss.item()
                 sum_align_loss += align_loss.item()
                 loss_sum_all += loss_all.item()
-
                 sum_mask_loss += mask_loss.item() if masked_features is not None else 0
+
+                loss_all.backward() # 移除 retain_graph=True，释放计算图
+
+                # ========== 每个batch后清理显存 ==========
+                if self.args.cuda and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             self.optimizer.step()
 
@@ -540,6 +541,7 @@ class MCLEA:
                 'align_loss': sum_align_loss / num_batches,
                 'total_loss': loss_sum_all / num_batches
             }
+            
             # 如果使用了掩码，额外保存掩码损失到单独的日志文件
             if self.args.mask_ratio > 0.0:
                 mask_train_log = {
