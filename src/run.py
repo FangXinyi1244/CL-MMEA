@@ -492,16 +492,22 @@ class MCLEA:
                 # 计算掩码对比损失
                 mask_loss = 0.0
                 if masked_features is not None:
-                    # 对每个模态计算掩码对比损失
                     modal_names = ['img', 'rel', 'att', 'gph', 'name', 'char']
                     modal_count = 0
+                    
+                    # 获取训练集实体的索引
+                    train_indices = self.train_ill[:, 0]  # 或者根据您的设计选择
                     
                     for modal_name in modal_names:
                         original_emb = locals()[f"{modal_name}_emb"]
                         masked_emb = masked_features.get(modal_name)
                         
                         if original_emb is not None and masked_emb is not None:
-                            loss = self.criterion_masked(original_emb, masked_emb)
+                            # 只对训练集实体计算损失
+                            original_emb_train = original_emb[train_indices]
+                            masked_emb_train = masked_emb[train_indices]
+                            
+                            loss = self.criterion_masked(original_emb_train, masked_emb_train)
                             mask_loss += loss
                             modal_count += 1
                     
