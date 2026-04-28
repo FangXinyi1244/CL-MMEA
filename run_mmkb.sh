@@ -1,4 +1,3 @@
-
 CUDA_VISIBLE_DEVICES=$1 python3 src/run.py \
     --file_dir data/mmkb-datasets/$3 \
     --rate $4 \
@@ -19,4 +18,7 @@ CUDA_VISIBLE_DEVICES=$1 python3 src/run.py \
     --img_dim 100 \
     --attr_dim 100 \
     --w_name \
-    --w_char
+    --w_char \
+    --mask_ratio 0.15 \
+    --mask_method "random" \
+    --mask_loss_weight 0.1

@@ -90,6 +90,51 @@ def l2norm(X):
     return X
 
 
+# ========== 添加 FeatureMasking 类 ==========
+class FeatureMasking(nn.Module):
+    """
+    对输入特征进行随机掩码（Feature Masking）
+    每个 epoch 随机将特征向量的 mask_ratio 比例维度置零
+    注意：此类仅在 training=True 且 mask_ratio > 0 时生效
+    """
+    
+    def __init__(self, mask_ratio=0.15, mask_method="random"):
+        super(FeatureMasking, self).__init__()
+        self.mask_ratio = mask_ratio
+        self.mask_method = mask_method
+        
+    def forward(self, x, training=True):
+        """
+        安全的前向传播：
+        - 非训练模式：返回原始特征
+        - mask_ratio=0：返回原始特征
+        - 否则：返回掩码后的特征
+        """
+        # 关键：如果不训练或掩码比例为 0，直接返回输入
+        if not training or self.mask_ratio == 0.0:
+            return x
+        
+        batch_size, feature_dim = x.shape
+        
+        if self.mask_method == "random":
+            # 方法1: 每个样本独立随机掩码
+            mask = torch.rand_like(x) < self.mask_ratio
+            x_masked = x.clone()
+            x_masked[mask] = 0.0
+            return x_masked
+            
+        elif self.mask_method == "structured":
+            # 方法2: 结构化掩码（同一 batch 掩码相同维度）
+            mask_indices = torch.randperm(feature_dim)[:int(feature_dim * self.mask_ratio)]
+            mask = torch.zeros_like(x)
+            mask[:, mask_indices] = 1.0
+            return x * (1 - mask)
+            
+        else:
+            # 默认返回原始特征
+            return x
+
+
 class MultiModalFusion(nn.Module):
     def __init__(self, modal_num, with_weight=1):
         super().__init__()
@@ -176,6 +221,20 @@ class MultiModalEncoder(nn.Module):
         self.fusion = MultiModalFusion(modal_num=self.args.inner_view_num,
                                        with_weight=self.args.with_weight)
 
+         # ========== 新增：特征掩码模块（可选） ==========
+        self.mask_ratio = getattr(args, 'mask_ratio', 0.0)  # 默认 0（关闭）
+        self.mask_method = getattr(args, 'mask_method', 'random')
+        # 缓存掩码特征（用于计算掩码对比损失）
+        self.masked_features_cache = None
+        
+        if self.mask_ratio > 0.0:
+            self.feature_masking = FeatureMasking(
+                mask_ratio=self.mask_ratio,
+                mask_method=self.mask_method
+            )
+        else:
+            self.feature_masking = None
+
     def forward(self,
                 input_idx,
                 adj,
@@ -219,4 +278,23 @@ class MultiModalEncoder(nn.Module):
 
         joint_emb = self.fusion([img_emb, att_emb, rel_emb, gph_emb, name_emb, char_emb])
 
+        # ========== 新增：生成并缓存掩码特征 ==========
+        if self.feature_masking is not None and self.training:
+            self.masked_features_cache = {
+                'img': self.feature_masking(img_emb) if img_emb is not None else None,
+                'rel': self.feature_masking(rel_emb) if rel_emb is not None else None,
+                'att': self.feature_masking(att_emb) if att_emb is not None else None,
+                'gph': self.feature_masking(gph_emb) if gph_emb is not None else None,
+                'name': self.feature_masking(name_emb) if name_emb is not None else None,
+                'char': self.feature_masking(char_emb) if char_emb is not None else None,
+            }
+        else:
+            self.masked_features_cache = None
+        
         return gph_emb, img_emb, rel_emb, att_emb, name_emb, char_emb, joint_emb
+
+    def get_masked_features(self):
+        """获取掩码后的特征（用于计算掩码对比损失）"""
+        return self.masked_features_cache
+
+

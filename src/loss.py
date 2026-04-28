@@ -174,3 +174,44 @@ class ial_loss(nn.Module):
             loss_b = loss_b.sum()
         # The purpose of the zoom is to narrow the range of losses
         return self.zoom * (alpha * loss_a + (1 - alpha) * loss_b)
+
+# ========== 在 loss.py 末尾添加 ==========
+class masked_contrastive_loss(nn.Module):
+    """
+    基于特征掩码的对比损失（自监督）
+    正对：同一实体的原始特征与掩码特征
+    负对：该实体掩码特征与其他实体的特征
+    """
+    
+    def __init__(self, device, tau=0.05, mask_loss_weight=0.1):
+        super(masked_contrastive_loss, self).__init__()
+        self.tau = tau
+        self.device = device
+        self.mask_loss_weight = mask_loss_weight
+        
+    def forward(self, original_emb, masked_emb, norm=True):
+        """
+        Args:
+            original_emb: 原始特征 (N, D)
+            masked_emb: 掩码后的特征 (N, D)
+            norm: 是否 L2 归一化
+        Returns:
+            loss: 标量
+        """
+        if norm:
+            original_emb = F.normalize(original_emb, dim=1)
+            masked_emb = F.normalize(masked_emb, dim=1)
+            
+        batch_size = original_emb.shape[0]
+        
+        # 计算相似度矩阵
+        # masked_emb 作为 query，original_emb 作为 key
+        logits = torch.matmul(masked_emb, original_emb.t()) / self.tau  # (N, N)
+        
+        # 标签：对角线为正对（原始特征 i 和掩码特征 i 是正对）
+        labels = torch.arange(batch_size).to(self.device)
+        
+        # 交叉熵损失
+        loss = F.cross_entropy(logits, labels)
+        
+        return self.mask_loss_weight * loss

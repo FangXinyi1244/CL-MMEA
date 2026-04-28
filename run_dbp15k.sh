@@ -1,4 +1,3 @@
-
 CUDA_VISIBLE_DEVICES=$1 python3 src/run.py \
     --file_dir data/DBP15K/$3 \
     --rate 0.3 \
@@ -19,4 +18,7 @@ CUDA_VISIBLE_DEVICES=$1 python3 src/run.py \
     --img_dim 100 \
     --attr_dim 100 \
     --name_dim 100 \
-    --char_dim 100
+    --char_dim 100 \
+    --mask_ratio 0.15 \
+    --mask_method "random" \
+    --mask_loss_weight 0.1

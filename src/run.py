@@ -183,6 +183,14 @@ class MCLEA:
         parser.add_argument("--reduction", type=str, default="mean", help="[sum|mean]")
         parser.add_argument("--save_path", type=str, default="save_pkl", help="save path")
 
+        # ========== 特征掩码相关参数 ==========
+        parser.add_argument("--mask_ratio", type=float, default=0.0,
+                           help="特征掩码比例 (0.0=关闭, 0.1~0.2=推荐)")
+        parser.add_argument("--mask_method", type=str, default="random",
+                           help="掩码方法: [random|structured]")
+        parser.add_argument("--mask_loss_weight", type=float, default=0.1,
+                           help="掩码对比损失的权重")
+
         return parser.parse_args()
 
     @staticmethod
@@ -362,6 +370,14 @@ class MCLEA:
                                         zoom=self.args.zoom,
                                         reduction=self.args.reduction)
 
+        # 初始化掩码对比损失
+        if self.args.mask_ratio > 0.0:
+            self.criterion_masked = masked_contrastive_loss(
+                device=self.device,
+                tau=self.args.tau,
+                mask_loss_weight=self.args.mask_loss_weight
+            )
+
     def semi_supervised_learning(self):
 
         with torch.no_grad():
@@ -445,8 +461,15 @@ class MCLEA:
                                                                     self.name_features,
                                                                     self.char_features)
 
+            # 获取掩码特征（如果启用了掩码）
+            masked_features = None
+            if self.args.mask_ratio > 0.0:
+                masked_features = self.multimodal_encoder.get_masked_features()
+
             # 【日志记录】初始化累加器
             sum_loss_joi, sum_in_loss, sum_align_loss, loss_sum_all = 0, 0, 0, 0
+            # 掩码损失累加器
+            sum_mask_loss = 0  
             epoch_CG += 1
 
             # manual batching
@@ -466,7 +489,26 @@ class MCLEA:
                 align_loss = self.kl_alignment_loss(joint_emb, gph_emb, rel_emb, att_emb, img_emb, name_emb,
                                                     char_emb, self.train_ill[si:si + bsize])
 
-                loss_all = loss_joi + in_loss + align_loss
+                # 计算掩码对比损失
+                mask_loss = 0.0
+                if masked_features is not None:
+                    # 对每个模态计算掩码对比损失
+                    modal_names = ['img', 'rel', 'att', 'gph', 'name', 'char']
+                    modal_count = 0
+                    
+                    for modal_name in modal_names:
+                        original_emb = locals()[f"{modal_name}_emb"]
+                        masked_emb = masked_features.get(modal_name)
+                        
+                        if original_emb is not None and masked_emb is not None:
+                            loss = self.criterion_masked(original_emb, masked_emb)
+                            mask_loss += loss
+                            modal_count += 1
+                    
+                    if modal_count > 0:
+                        mask_loss = mask_loss / modal_count
+                
+                loss_all = loss_joi + in_loss + align_loss + mask_loss
 
                 loss_all.backward(retain_graph=True)
 
@@ -475,6 +517,8 @@ class MCLEA:
                 sum_in_loss += in_loss.item()
                 sum_align_loss += align_loss.item()
                 loss_sum_all += loss_all.item()
+
+                sum_mask_loss += mask_loss.item() if masked_features is not None else 0
 
             self.optimizer.step()
 
@@ -485,6 +529,12 @@ class MCLEA:
                 'align_loss': sum_align_loss / num_batches,
                 'total_loss': loss_sum_all / num_batches
             }
+            # 如果使用了掩码，额外保存掩码损失到单独的日志文件
+            if self.args.mask_ratio > 0.0:
+                mask_train_log = {
+                    'mask_loss': sum_mask_loss / num_batches
+                }
+                log_experiment_data(self.args.save_path, "masked_train_loss.csv", mask_train_log, epoch)
             log_experiment_data(self.args.save_path, "baseline_train_loss.csv", train_log, epoch)
 
             print("[epoch {:d}] loss_all: {:f}, time: {:.4f} s".format(epoch, loss_sum_all, time.time() - t_epoch))
