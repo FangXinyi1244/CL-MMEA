@@ -497,8 +497,9 @@ class MCLEA:
                     modal_names = ['img', 'rel', 'att', 'gph', 'name', 'char']
                     modal_count = 0
                     
-                    # 获取训练集实体的索引
-                    train_indices = self.train_ill[:, 0]  # 或者根据您的设计选择
+                    # 获取所有训练实体的索引（左表 + 右表）
+                    train_indices = np.unique(self.train_ill.flatten())
+                    train_indices = torch.LongTensor(train_indices).to(self.device)
                     
                     for modal_name in modal_names:
                         original_emb = locals()[f"{modal_name}_emb"]
@@ -526,7 +527,9 @@ class MCLEA:
                 loss_sum_all += loss_all.item()
                 sum_mask_loss += mask_loss.item() if masked_features is not None else 0
 
-                loss_all.backward() # 移除 retain_graph=True，释放计算图
+                loss_all.backward(retain_graph=True)
+
+                del loss_joi, in_loss, align_loss, mask_loss, loss_all
 
                 # ========== 每个batch后清理显存 ==========
                 if self.args.cuda and torch.cuda.is_available():
@@ -541,7 +544,7 @@ class MCLEA:
                 'align_loss': sum_align_loss / num_batches,
                 'total_loss': loss_sum_all / num_batches
             }
-            
+
             # 如果使用了掩码，额外保存掩码损失到单独的日志文件
             if self.args.mask_ratio > 0.0:
                 mask_train_log = {
