@@ -518,6 +518,10 @@ class MCLEA:
 
                 loss_all.backward(retain_graph=True)
 
+                # ========== 每个batch后清理显存 ==========
+                if self.args.cuda and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
                 # 【日志记录】累加各分项 Loss
                 sum_loss_joi += loss_joi.item()
                 sum_in_loss += in_loss.item()
