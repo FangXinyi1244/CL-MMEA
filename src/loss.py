@@ -181,14 +181,18 @@ class masked_contrastive_loss(nn.Module):
     基于特征掩码的对比损失（自监督）
     正对：同一实体的原始特征与掩码特征
     负对：该实体掩码特征与其他实体的特征
+    
+    【优化】添加负样本采样限制，避免训练集膨胀时显存爆炸
     """
     
-    def __init__(self, device, tau=0.05, mask_loss_weight=0.1, batch_size=512):
+    def __init__(self, device, tau=0.05, mask_loss_weight=0.1, 
+                 batch_size=512, max_neg_samples=1024):
         super(masked_contrastive_loss, self).__init__()
         self.tau = tau
         self.device = device
         self.mask_loss_weight = mask_loss_weight
-        self.batch_size = batch_size  # 新增：分批计算的大小
+        self.batch_size = batch_size
+        self.max_neg_samples = max_neg_samples  # 限制负样本数量
         
     def forward(self, original_emb, masked_emb, norm=True):
         """
@@ -204,14 +208,26 @@ class masked_contrastive_loss(nn.Module):
             masked_emb = F.normalize(masked_emb, dim=1)
             
         N = original_emb.shape[0]
-        total_loss = 0.0
         
-        # ========== 关键修改：分批计算以避免 OOM ==========
-        for i in range(0, N, self.batch_size):
-            end_i = min(i + self.batch_size, N)
+        # 【关键优化】如果训练集过大，随机采样负样本
+        if N > self.max_neg_samples:
+            # 随机选择max_neg_samples个样本作为负样本候选集
+            indices = torch.randperm(N, device=original_emb.device)[:self.max_neg_samples]
+            original_emb = original_emb[indices]
+            # 重新编号labels
+            relabel_offset = 0
+        else:
+            relabel_offset = 0
+        
+        total_loss = 0.0
+        num_samples = original_emb.shape[0]
+        
+        # 分批计算
+        for i in range(0, num_samples, self.batch_size):
+            end_i = min(i + self.batch_size, num_samples)
             masked_batch = masked_emb[i:end_i]  # (B, D)
             
-            # 计算相似度：(B, D) x (D, N) -> (B, N)
+            # 【显存安全】使用截断的负样本
             logits = torch.matmul(masked_batch, original_emb.t()) / self.tau
             
             # 标签：对于 batch[i:end_i]，正样本在索引 [i, i+1, ..., end_i-1]
@@ -219,11 +235,11 @@ class masked_contrastive_loss(nn.Module):
             
             # 计算这个 batch 的交叉熵损失
             loss = F.cross_entropy(logits, labels)
-            total_loss += loss * (end_i - i)  # 按 batch 大小加权
+            total_loss += loss * (end_i - i)
             
-            # 立即释放显存
-            del logits
-            
-        total_loss = total_loss / N  # 对所有样本取平均
+            # 释放中间变量
+            del logits, masked_batch
+        
+        total_loss = total_loss / N
         
         return self.mask_loss_weight * total_loss

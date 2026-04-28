@@ -370,12 +370,14 @@ class MCLEA:
                                         zoom=self.args.zoom,
                                         reduction=self.args.reduction)
 
-        # 初始化掩码对比损失
+        # 初始化掩码对比损失（添加负样本数量限制以防止OOM）
         if self.args.mask_ratio > 0.0:
             self.criterion_masked = masked_contrastive_loss(
                 device=self.device,
                 tau=self.args.tau,
-                mask_loss_weight=self.args.mask_loss_weight
+                mask_loss_weight=self.args.mask_loss_weight,
+                batch_size=self.args.bsize,
+                max_neg_samples=1024  # 限制负样本数量，防止训练集膨胀时显存爆炸
             )
 
     def semi_supervised_learning(self):
@@ -442,7 +444,7 @@ class MCLEA:
 
         for epoch in range(self.args.epochs):
 
-            if epoch == epoch >= self.args.il_start:
+            if epoch >= self.args.il_start:
                 self.optimizer = optim.AdamW(self.params, lr=self.args.lr / 5)
 
             t_epoch = time.time()
@@ -515,8 +517,7 @@ class MCLEA:
                         mask_loss = mask_loss / modal_count
                 
                 loss_all = loss_joi + in_loss + align_loss + mask_loss
-
-                loss_all.backward(retain_graph=True)
+                loss_all.backward() # 移除 retain_graph=True，释放计算图
 
                 # ========== 每个batch后清理显存 ==========
                 if self.args.cuda and torch.cuda.is_available():
