@@ -279,19 +279,32 @@ class MultiModalEncoder(nn.Module):
         joint_emb = self.fusion([img_emb, att_emb, rel_emb, gph_emb, name_emb, char_emb])
 
         # ========== 新增：生成并缓存掩码特征 ==========
+        joint_emb_masked = None  # 初始化
         if self.feature_masking is not None and self.training:
+            # 对每种模态特征进行掩码
+            masked_img = self.feature_masking(img_emb) if img_emb is not None else None
+            masked_rel = self.feature_masking(rel_emb) if rel_emb is not None else None
+            masked_att = self.feature_masking(att_emb) if att_emb is not None else None
+            masked_gph = self.feature_masking(gph_emb) if gph_emb is not None else None
+            masked_name = self.feature_masking(name_emb) if name_emb is not None else None
+            masked_char = self.feature_masking(char_emb) if char_emb is not None else None
+            
+            # 缓存掩码特征（用于计算掩码对比损失）
             self.masked_features_cache = {
-                'img': self.feature_masking(img_emb) if img_emb is not None else None,
-                'rel': self.feature_masking(rel_emb) if rel_emb is not None else None,
-                'att': self.feature_masking(att_emb) if att_emb is not None else None,
-                'gph': self.feature_masking(gph_emb) if gph_emb is not None else None,
-                'name': self.feature_masking(name_emb) if name_emb is not None else None,
-                'char': self.feature_masking(char_emb) if char_emb is not None else None,
+                'img': masked_img,
+                'rel': masked_rel,
+                'att': masked_att,
+                'gph': masked_gph,
+                'name': masked_name,
+                'char': masked_char,
             }
+            
+            # 计算掩码后的 joint_emb
+            joint_emb_masked = self.fusion([masked_img, masked_att, masked_rel, masked_gph, masked_name, masked_char])
         else:
             self.masked_features_cache = None
-        
-        return gph_emb, img_emb, rel_emb, att_emb, name_emb, char_emb, joint_emb
+
+        return gph_emb, img_emb, rel_emb, att_emb, name_emb, char_emb, joint_emb, joint_emb_masked
 
     def get_masked_features(self):
         """获取掩码后的特征（用于计算掩码对比损失）"""

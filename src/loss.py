@@ -225,7 +225,7 @@ class masked_contrastive_loss(nn.Module):
             logits = torch.matmul(masked_batch, original_emb.t()) / self.tau
             
             # ✅ 标签正确：[0, 1, ..., B-1] 对应正样本在 original_emb 的相同位置
-            labels = torch.arange(end_i - i, device=self.device)
+            labels = torch.arange(i, end_i, device=self.device)
             
             loss = F.cross_entropy(logits, labels)
             total_loss += loss * (end_i - i)

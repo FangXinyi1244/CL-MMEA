@@ -188,8 +188,8 @@ class MCLEA:
                            help="特征掩码比例 (0.0=关闭, 0.1~0.2=推荐)")
         parser.add_argument("--mask_method", type=str, default="random",
                            help="掩码方法: [random|structured]")
-        parser.add_argument("--mask_loss_weight", type=float, default=0.1,
-                           help="掩码对比损失的权重")
+        parser.add_argument("--mask_loss_weight", type=float, default=0.5,
+                   help="掩码对比损失的权重")
 
         return parser.parse_args()
 
@@ -454,14 +454,27 @@ class MCLEA:
             self.align_multi_loss_layer.train()
             self.optimizer.zero_grad()
 
-            gph_emb, img_emb, rel_emb, att_emb, \
-            name_emb, char_emb, joint_emb = self.multimodal_encoder(self.input_idx,
-                                                                    self.adj,
-                                                                    self.img_features,
-                                                                    self.rel_features,
-                                                                    self.att_features,
-                                                                    self.name_features,
-                                                                    self.char_features)
+            # 前向传播（根据是否启用掩码，决定是否返回 joint_emb_masked）
+            if self.args.mask_ratio > 0.0:
+                gph_emb, img_emb, rel_emb, att_emb, \
+                name_emb, char_emb, joint_emb, joint_emb_masked = self.multimodal_encoder(
+                    self.input_idx,
+                    self.adj,
+                    self.img_features,
+                    self.rel_features,
+                    self.att_features,
+                    self.name_features,
+                    self.char_features)
+            else:
+                gph_emb, img_emb, rel_emb, att_emb, \
+                name_emb, char_emb, joint_emb, joint_emb_masked = self.multimodal_encoder(
+                    self.input_idx,
+                    self.adj,
+                    self.img_features,
+                    self.rel_features,
+                    self.att_features,
+                    self.name_features,
+                    self.char_features) + (None,)  # 补齐返回
 
             # 获取掩码特征（如果启用了掩码）
             masked_features = None
@@ -480,35 +493,44 @@ class MCLEA:
             num_batches = math.ceil(self.train_ill.shape[0] / bsize) 
 
             for si in np.arange(0, self.train_ill.shape[0], bsize):
-                #  ICL loss for joint embedding
-                loss_joi = self.criterion_cl(joint_emb, self.train_ill[si:si + bsize])
+                #  ICL loss for joint embedding（如果有掩码后的joint_emb，则使用它）
+                if joint_emb_masked is not None:
+                    loss_joi = self.criterion_cl(joint_emb_masked, self.train_ill[si:si + bsize])
+                else:
+                    loss_joi = self.criterion_cl(joint_emb, self.train_ill[si:si + bsize])
 
                 # ICL loss for uni-modal embedding
                 in_loss = self.inner_view_loss(gph_emb, rel_emb, att_emb, img_emb, name_emb, char_emb,
-                                               self.train_ill[si:si + bsize])
+                                            self.train_ill[si:si + bsize])
 
                 # IAL loss for uni-modal embedding
-                align_loss = self.kl_alignment_loss(joint_emb, gph_emb, rel_emb, att_emb, img_emb, name_emb,
-                                                    char_emb, self.train_ill[si:si + bsize])
+                if joint_emb_masked is not None:
+                    align_loss = self.kl_alignment_loss(joint_emb_masked, gph_emb, rel_emb, att_emb, img_emb, name_emb,
+                                                        char_emb, self.train_ill[si:si + bsize])
+                else:
+                    align_loss = self.kl_alignment_loss(joint_emb, gph_emb, rel_emb, att_emb, img_emb, name_emb,
+                                                        char_emb, self.train_ill[si:si + bsize])
 
                 # 计算掩码对比损失
                 mask_loss = 0.0
                 if masked_features is not None:
                     modal_names = ['img', 'rel', 'att', 'gph', 'name', 'char']
+                    original_embs = [img_emb, rel_emb, att_emb, gph_emb, name_emb, char_emb]
                     modal_count = 0
                     
                     # 获取所有训练实体的索引（左表 + 右表）
-                    train_indices = np.unique(self.train_ill.flatten())
-                    train_indices = torch.LongTensor(train_indices).to(self.device)
+                    if epoch == 0 and si == 0:  # 只在第一个epoch的第一个batch计算
+                        train_indices = np.unique(self.train_ill.flatten())
+                        self.train_indices_tensor = torch.LongTensor(train_indices).to(self.device)
                     
-                    for modal_name in modal_names:
-                        original_emb = locals()[f"{modal_name}_emb"]
+                    for idx, modal_name in enumerate(modal_names):
+                        original_emb = original_embs[idx]
                         masked_emb = masked_features.get(modal_name)
                         
                         if original_emb is not None and masked_emb is not None:
                             # 只对训练集实体计算损失
-                            original_emb_train = original_emb[train_indices]
-                            masked_emb_train = masked_emb[train_indices]
+                            original_emb_train = original_emb[self.train_indices_tensor]
+                            masked_emb_train = masked_emb[self.train_indices_tensor]
                             
                             loss = self.criterion_masked(original_emb_train, masked_emb_train)
                             mask_loss += loss
