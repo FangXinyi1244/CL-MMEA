@@ -383,14 +383,15 @@ class MCLEA:
     def semi_supervised_learning(self):
 
         with torch.no_grad():
-            gph_emb, img_emb, rel_emb, att_emb, \
-            name_emb, char_emb, joint_emb = self.multimodal_encoder(self.input_idx,
-                                                                    self.adj,
-                                                                    self.img_features,
-                                                                    self.rel_features,
-                                                                    self.att_features,
-                                                                    self.name_features,
-                                                                    self.char_features)
+            # 解包8个返回值，但test和semi_supervised_learning只需要前7个
+            *embs, _ = self.multimodal_encoder(self.input_idx,
+                                                self.adj,
+                                                self.img_features,
+                                                self.rel_features,
+                                                self.att_features,
+                                                self.name_features,
+                                                self.char_features)
+            gph_emb, img_emb, rel_emb, att_emb, name_emb, char_emb, joint_emb = embs[:7]
 
             final_emb = F.normalize(joint_emb)
 
@@ -623,14 +624,15 @@ class MCLEA:
             self.align_multi_loss_layer.eval()
 
             # 1. 前向传播
-            gph_emb, img_emb, rel_emb, att_emb, \
-            name_emb, char_emb, joint_emb = self.multimodal_encoder(self.input_idx,
-                                                                    self.adj,
-                                                                    self.img_features,
-                                                                    self.rel_features,
-                                                                    self.att_features,
-                                                                    self.name_features,
-                                                                    self.char_features)
+            # 解包8个返回值，test方法只需要前7个（joint_emb用于评估）
+            *embs, _ = self.multimodal_encoder(self.input_idx,
+                                                self.adj,
+                                                self.img_features,
+                                                self.rel_features,
+                                                self.att_features,
+                                                self.name_features,
+                                                self.char_features)
+            gph_emb, img_emb, rel_emb, att_emb, name_emb, char_emb, joint_emb = embs[:7]
 
             # 2. 保留原版权重打印
             w_normalized = F.softmax(self.multimodal_encoder.fusion.weight, dim=0)
