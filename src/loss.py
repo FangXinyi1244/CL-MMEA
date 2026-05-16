@@ -229,11 +229,14 @@ class masked_contrastive_loss(nn.Module):
     负对：该实体掩码特征与其他实体的特征
     """
     
-    def __init__(self, device, tau=0.05, mask_loss_weight=0.1):
+    def __init__(self, device, tau=0.05, mask_loss_weight=0.1, 
+                 batch_size=512, max_neg_samples=512):
         super(masked_contrastive_loss, self).__init__()
         self.tau = tau
         self.device = device
         self.mask_loss_weight = mask_loss_weight
+        self.batch_size = batch_size
+        self.max_neg_samples = max_neg_samples
         
     def forward(self, original_emb, masked_emb, norm=True):
         """
@@ -248,16 +251,33 @@ class masked_contrastive_loss(nn.Module):
             original_emb = F.normalize(original_emb, dim=1)
             masked_emb = F.normalize(masked_emb, dim=1)
             
-        batch_size = original_emb.shape[0]
+        N = original_emb.shape[0]
         
-        # 计算相似度矩阵
-        # masked_emb 作为 query，original_emb 作为 key
-        logits = torch.matmul(masked_emb, original_emb.t()) / self.tau  # (N, N)
+        # 如果训练集过大，同时采样 original_emb 和 masked_emb
+        if N > self.max_neg_samples:
+            indices = torch.randperm(N, device=original_emb.device)[:self.max_neg_samples]
+            original_emb = original_emb[indices]
+            masked_emb = masked_emb[indices]  # ✅ 同步采样
+            N = self.max_neg_samples  # ✅ 更新N
         
-        # 标签：对角线为正对（原始特征 i 和掩码特征 i 是正对）
-        labels = torch.arange(batch_size).to(self.device)
+        total_loss = 0.0
         
-        # 交叉熵损失
-        loss = F.cross_entropy(logits, labels)
+        # 分批计算
+        for i in range(0, N, self.batch_size):
+            end_i = min(i + self.batch_size, N)
+            masked_batch = masked_emb[i:end_i]
+            
+            # (B, D) x (D, N) -> (B, N)
+            logits = torch.matmul(masked_batch, original_emb.t()) / self.tau
+            
+            # ✅ 标签正确：[0, 1, ..., B-1] 对应正样本在 original_emb 的相同位置
+            labels = torch.arange(i, end_i, device=self.device)
+            
+            loss = F.cross_entropy(logits, labels)
+            total_loss += loss * (end_i - i)
+            
+            del logits, masked_batch
         
-        return self.mask_loss_weight * loss
+        total_loss = total_loss / N
+        
+        return self.mask_loss_weight * total_loss
