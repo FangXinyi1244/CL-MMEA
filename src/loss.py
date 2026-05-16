@@ -33,8 +33,8 @@ class icl_loss(nn.Module):
 
     def __init__(self, device, tau=0.05, ab_weight=0.5, n_view=2, 
                  intra_weight=1.0, inversion=False,
-                 use_hard_negatives=False,  # 新增：是否使用硬负采样
-                 hard_negative_k=50):        # 新增：硬负样本数量
+                 use_hard_negatives=False,  # 是否使用硬负采样
+                 hard_negative_k=50):        # 硬负样本数量
         super(icl_loss, self).__init__()
         self.tau = tau
         self.device = device
@@ -44,7 +44,7 @@ class icl_loss(nn.Module):
         self.intra_weight = intra_weight  # the factor of aa and bb
         self.inversion = inversion
 
-        # 新增采用硬负采样参数
+        # 采用硬负采样参数
         self.use_hard_negatives = use_hard_negatives
         self.hard_negative_k = hard_negative_k
 
