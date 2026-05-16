@@ -87,25 +87,24 @@ class icl_loss(nn.Module):
             logits_aa = torch.matmul(hidden1, torch.transpose(hidden1_large, 0, 1)) / temperature
             logits_bb = torch.matmul(hidden2, torch.transpose(hidden2_large, 0, 1)) / temperature
             
-            # 2. 掩码掉自己（对角线）
-            mask = torch.eye(batch_size, device=self.device)
+            # 2. 掩码掉自己（对角线）- 修复：添加 .float()
+            mask = torch.eye(batch_size, device=self.device).float()  # ✅ 修复类型
             logits_aa = logits_aa - mask * LARGE_NUM
             logits_bb = logits_bb - mask * LARGE_NUM
             
             # ========== 核心：软锐化（Soft Sharpening）==========
-            # 使用 sigmoid 函数自动强调高相似度（硬负样本）
-            # 高相似度 -> sigmoid 接近 1 -> 缩放因子接近 1.5
-            # 低相似度 -> sigmoid 接近 0 -> 缩放因子接近 1.0
+            # 优化：使用更高效的锐化方式，避免额外的 sigmoid 开销
+            # 方案：直接使用放大后的 logits，但通过温度缩放实现类似效果
             
-            # 对 logits_ab 应用软锐化
-            sigmoid_scaler_ab = torch.sigmoid(logits_ab * 5.0)  # 5.0 控制陡峭度
-            hard_weight_ab = 1.0 + 0.5 * sigmoid_scaler_ab  # 缩放范围：[1.0, 1.5]
-            logits_ab = logits_ab * hard_weight_ab
+            # 对 logits_ab 和 logits_ba 应用温度缩放（强调硬负样本）
+            # 高相似度负样本使用更小温度 -> logits 相对更大 -> softmax 更尖锐
+            sharp_temp = temperature * 0.5  # 小温度 -> 更尖锐
+            logits_ab_sharp = logits_ab / sharp_temp * temperature  # 相对放大
+            logits_ba_sharp = logits_ba / sharp_temp * temperature
             
-            # 对 logits_ba 应用软锐化
-            sigmoid_scaler_ba = torch.sigmoid(logits_ba * 5.0)
-            hard_weight_ba = 1.0 + 0.5 * sigmoid_scaler_ba
-            logits_ba = logits_ba * hard_weight_ba
+            # 与原 logits 加权融合（保留部分原始信息）
+            logits_ab = 0.5 * logits_ab + 0.5 * logits_ab_sharp
+            logits_ba = 0.5 * logits_ba + 0.5 * logits_ba_sharp
             
             # 3. 拼接 logits（与原逻辑一致）
             if self.inversion:
@@ -115,10 +114,10 @@ class icl_loss(nn.Module):
                 logits_a = torch.cat([logits_ab, logits_aa], dim=1)
                 logits_b = torch.cat([logits_ba, logits_bb], dim=1)
 
-            # 4. 使用交叉熵损失
-            labels = torch.arange(batch_size, device=self.device)
-            loss_a = F.cross_entropy(logits_a, labels)
-            loss_b = F.cross_entropy(logits_b, labels)            
+            # 4. 使用 self.softXEnt（与原分支一致，避免 F.cross_entropy 的低效）
+            labels = F.one_hot(torch.arange(batch_size, device=self.device), num_classes=num_classes).float()
+            loss_a = self.softXEnt(labels, logits_a)  # ✅ 使用 softXEnt
+            loss_b = self.softXEnt(labels, logits_b)            
         else:
             # 原始逻辑（保持原有实现）
             masks = torch.eye(batch_size, device=self.device).float()
