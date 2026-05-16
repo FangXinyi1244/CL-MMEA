@@ -31,10 +31,7 @@ class CustomMultiLossLayer(nn.Module):
 
 class icl_loss(nn.Module):
 
-    def __init__(self, device, tau=0.05, ab_weight=0.5, n_view=2, 
-                 intra_weight=1.0, inversion=False,
-                 use_hard_negatives=False,  # 是否使用硬负采样
-                 hard_negative_k=50):        # 硬负样本数量
+    def __init__(self, device, tau=0.05, ab_weight=0.5, n_view=2, intra_weight=1.0, inversion=False):
         super(icl_loss, self).__init__()
         self.tau = tau
         self.device = device
@@ -43,10 +40,6 @@ class icl_loss(nn.Module):
         self.n_view = n_view
         self.intra_weight = intra_weight  # the factor of aa and bb
         self.inversion = inversion
-
-        # 采用硬负采样参数
-        self.use_hard_negatives = use_hard_negatives
-        self.hard_negative_k = hard_negative_k
 
     def softXEnt(self, target, logits):
 
@@ -59,8 +52,8 @@ class icl_loss(nn.Module):
             emb = F.normalize(emb, dim=1)
             if emb2 is not None:
                 emb2 = F.normalize(emb2, dim=1)
-        
         num_ent = emb.shape[0]
+        # Get (normalized) hidden1 and hidden2.
         zis = emb[train_links[:, 0]]
         if emb2 is not None:
             zjs = emb2[train_links[:, 1]]
@@ -70,6 +63,7 @@ class icl_loss(nn.Module):
         temperature = self.tau
         alpha = self.weight
         n_view = self.n_view
+
         LARGE_NUM = 1e9
 
         hidden1, hidden2 = zis, zjs
@@ -78,68 +72,32 @@ class icl_loss(nn.Module):
         hidden1_large = hidden1
         hidden2_large = hidden2
         num_classes = batch_size * n_view
-        
-        # 修改：如果使用硬负采样，labels 不再是 one-hot，而是需要特殊处理
-        if self.use_hard_negatives:
-            # 1. 计算相似度矩阵（与原版相同）
-            logits_ab = torch.matmul(hidden1, torch.transpose(hidden2_large, 0, 1)) / temperature
-            logits_ba = torch.matmul(hidden2, torch.transpose(hidden1_large, 0, 1)) / temperature
-            logits_aa = torch.matmul(hidden1, torch.transpose(hidden1_large, 0, 1)) / temperature
-            logits_bb = torch.matmul(hidden2, torch.transpose(hidden2_large, 0, 1)) / temperature
-            
-            # 2. 掩码掉自己（对角线）- 修复：添加 .float()
-            mask = torch.eye(batch_size, device=self.device).float()  # ✅ 修复类型
-            logits_aa = logits_aa - mask * LARGE_NUM
-            logits_bb = logits_bb - mask * LARGE_NUM
-            
-            # ========== 核心：软锐化（Soft Sharpening）==========
-            # 优化：使用更高效的锐化方式，避免额外的 sigmoid 开销
-            # 方案：直接使用放大后的 logits，但通过温度缩放实现类似效果
-            
-            # 对 logits_ab 和 logits_ba 应用温度缩放（强调硬负样本）
-            # 高相似度负样本使用更小温度 -> logits 相对更大 -> softmax 更尖锐
-            sharp_temp = temperature * 0.5  # 小温度 -> 更尖锐
-            logits_ab_sharp = logits_ab / sharp_temp * temperature  # 相对放大
-            logits_ba_sharp = logits_ba / sharp_temp * temperature
-            
-            # 与原 logits 加权融合（保留部分原始信息）
-            logits_ab = 0.5 * logits_ab + 0.5 * logits_ab_sharp
-            logits_ba = 0.5 * logits_ba + 0.5 * logits_ba_sharp
-            
-            # 3. 拼接 logits（与原逻辑一致）
-            if self.inversion:
-                logits_a = torch.cat([logits_ab, logits_bb], dim=1)
-                logits_b = torch.cat([logits_ba, logits_aa], dim=1)
-            else:
-                logits_a = torch.cat([logits_ab, logits_aa], dim=1)
-                logits_b = torch.cat([logits_ba, logits_bb], dim=1)
+        labels = F.one_hot(torch.arange(start=0, end=batch_size, dtype=torch.int64), num_classes=num_classes).float()
+        labels = labels.to(self.device)
 
-            # 4. 使用 self.softXEnt（与原分支一致，避免 F.cross_entropy 的低效）
-            labels = F.one_hot(torch.arange(batch_size, device=self.device), num_classes=num_classes).float()
-            loss_a = self.softXEnt(labels, logits_a)  # ✅ 使用 softXEnt
-            loss_b = self.softXEnt(labels, logits_b)            
+        masks = F.one_hot(torch.arange(start=0, end=batch_size, dtype=torch.int64), num_classes=batch_size)
+        masks = masks.to(self.device).float()
+        logits_aa = torch.matmul(hidden1, torch.transpose(hidden1_large, 0, 1)) / temperature
+        logits_aa = logits_aa - masks * LARGE_NUM
+        logits_bb = torch.matmul(hidden2, torch.transpose(hidden2_large, 0, 1)) / temperature
+        logits_bb = logits_bb - masks * LARGE_NUM
+        logits_ab = torch.matmul(hidden1, torch.transpose(hidden2_large, 0, 1)) / temperature
+        logits_ba = torch.matmul(hidden2, torch.transpose(hidden1_large, 0, 1)) / temperature
+
+        # logits_a = torch.cat([logits_ab, self.intra_weight*logits_aa], dim=1)
+        # logits_b = torch.cat([logits_ba, self.intra_weight*logits_bb], dim=1)
+        if self.inversion:
+            logits_a = torch.cat([logits_ab, logits_bb], dim=1)
+            logits_b = torch.cat([logits_ba, logits_aa], dim=1)
         else:
-            # 原始逻辑（保持原有实现）
-            masks = torch.eye(batch_size, device=self.device).float()
-            logits_aa = torch.matmul(hidden1, torch.transpose(hidden1_large, 0, 1)) / temperature
-            logits_aa = logits_aa - masks * LARGE_NUM
-            logits_bb = torch.matmul(hidden2, torch.transpose(hidden2_large, 0, 1)) / temperature
-            logits_bb = logits_bb - masks * LARGE_NUM
-            logits_ab = torch.matmul(hidden1, torch.transpose(hidden2_large, 0, 1)) / temperature
-            logits_ba = torch.matmul(hidden2, torch.transpose(hidden1_large, 0, 1)) / temperature
+            logits_a = torch.cat([logits_ab, logits_aa], dim=1)
+            logits_b = torch.cat([logits_ba, logits_bb], dim=1)
 
-            if self.inversion:
-                logits_a = torch.cat([logits_ab, logits_bb], dim=1)
-                logits_b = torch.cat([logits_ba, logits_aa], dim=1)
-            else:
-                logits_a = torch.cat([logits_ab, logits_aa], dim=1)
-                logits_b = torch.cat([logits_ba, logits_bb], dim=1)
-
-            labels = F.one_hot(torch.arange(batch_size, device=self.device), num_classes=num_classes).float()
-            loss_a = self.softXEnt(labels, logits_a)
-            loss_b = self.softXEnt(labels, logits_b)
+        loss_a = self.softXEnt(labels, logits_a)
+        loss_b = self.softXEnt(labels, logits_b)
 
         return alpha * loss_a + (1 - alpha) * loss_b
+
 
 class ial_loss(nn.Module):
     """
