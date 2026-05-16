@@ -21,4 +21,6 @@ CUDA_VISIBLE_DEVICES=$1 python3 src/run.py \
     --w_char \
     --mask_ratio 0.15 \
     --mask_method "random" \
-    --mask_loss_weight 0.1
+    --mask_loss_weight 0.1 \
+    --use_hard_negatives \
+    --hard_negative_k 50

@@ -364,7 +364,14 @@ class MCLEA:
         print(self.optimizer)
 
         # contrastive loss
-        self.criterion_cl = icl_loss(device=self.device, tau=self.args.tau, ab_weight=self.args.ab_weight, n_view=2)
+        self.criterion_cl = icl_loss(
+            device=self.device, 
+            tau=self.args.tau, 
+            ab_weight=self.args.ab_weight, 
+            n_view=2,
+            use_hard_negatives=True,   # 启用硬负采样
+            hard_negative_k=50        # Top-50 硬负样本
+        )
         self.criterion_align = ial_loss(device=self.device, tau=self.args.tau2,
                                         ab_weight=self.args.ab_weight,
                                         zoom=self.args.zoom,
