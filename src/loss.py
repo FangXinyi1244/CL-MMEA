@@ -90,26 +90,33 @@ class icl_loss(nn.Module):
             logits_bb = logits_bb - torch.eye(batch_size, device=self.device) * LARGE_NUM
 
             # ========== 硬负采样核心逻辑 ==========
-            # 对于 logits_ab: 每个 anchor i，找出相似度最高的 K 个非正样本
-            for i in range(batch_size):
-                # 排除正样本位置 i
-                logits_ab_i = logits_ab[i].clone()
-                logits_ab_i[i] = -LARGE_NUM  # 临时掩码正样本
-                
-                # 找出 top-K 硬负样本
-                _, hard_neg_indices = torch.topk(logits_ab_i, self.hard_negative_k)
-                
-                # 增强硬负样本的 logits（使其获得更高梯度）
-                logits_ab[i, hard_neg_indices] *= 1.5  # 放大因子可调整
-
-            # 同样处理 logits_ba
-            for i in range(batch_size):
-                logits_ba_i = logits_ba[i].clone()
-                logits_ba_i[i] = -LARGE_NUM
-                _, hard_neg_indices = torch.topk(logits_ba_i, self.hard_negative_k)
-                logits_ba[i, hard_neg_indices] *= 1.5
-
-            # 拼接 logits
+            # 1. 掩码掉正样本（对角线）
+            mask = torch.eye(batch_size, device=self.device)
+            logits_aa = logits_aa - mask * LARGE_NUM
+            logits_bb = logits_bb - mask * LARGE_NUM
+            
+            # 2. 为 logits_ab 找出每个 anchor 的 top-K 硬负样本（向量化）
+            # 先掩码掉正样本
+            logits_ab_masked = logits_ab.clone()
+            logits_ab_masked = logits_ab_masked - mask * LARGE_NUM
+            
+            # 向量化 topk：一次性找出所有行的硬负样本 [B, K]
+            k = min(self.hard_negative_k, batch_size - 1)
+            _, hard_neg_indices_ab = torch.topk(logits_ab_masked, k, dim=1)
+            
+            # 构造索引矩阵 [B, K]
+            batch_indices = torch.arange(batch_size, device=self.device).unsqueeze(1).expand(-1, k)
+            
+            # 增强硬负样本的 logits（保留核心理念：只强化困难样本）
+            logits_ab[batch_indices, hard_neg_indices_ab] *= 1.5
+            
+            # 3. 同样处理 logits_ba（向量化）
+            logits_ba_masked = logits_ba.clone()
+            logits_ba_masked = logits_ba_masked - mask * LARGE_NUM
+            _, hard_neg_indices_ba = torch.topk(logits_ba_masked, k, dim=1)
+            logits_ba[batch_indices, hard_neg_indices_ba] *= 1.5
+            
+            # 4. 拼接 logits（与原逻辑一致）
             if self.inversion:
                 logits_a = torch.cat([logits_ab, logits_bb], dim=1)
                 logits_b = torch.cat([logits_ba, logits_aa], dim=1)
@@ -117,7 +124,7 @@ class icl_loss(nn.Module):
                 logits_a = torch.cat([logits_ab, logits_aa], dim=1)
                 logits_b = torch.cat([logits_ba, logits_bb], dim=1)
 
-            # 使用标准交叉熵损失
+            # 5. 使用交叉熵损失
             labels = torch.arange(batch_size, device=self.device)
             loss_a = F.cross_entropy(logits_a, labels)
             loss_b = F.cross_entropy(logits_b, labels)
