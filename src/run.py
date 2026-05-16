@@ -191,6 +191,12 @@ class MCLEA:
         parser.add_argument("--mask_loss_weight", type=float, default=0.5,
                    help="掩码对比损失的权重")
 
+        # ========== 硬负采样相关参数 ==========
+        parser.add_argument("--use_hard_negatives", action="store_true", default=False,
+                           help="是否使用硬负采样")
+        parser.add_argument("--hard_negative_k", type=int, default=50,
+                           help="硬负样本数量（Top-K）")
+
         return parser.parse_args()
 
     @staticmethod
@@ -364,7 +370,14 @@ class MCLEA:
         print(self.optimizer)
 
         # contrastive loss
-        self.criterion_cl = icl_loss(device=self.device, tau=self.args.tau, ab_weight=self.args.ab_weight, n_view=2)
+        self.criterion_cl = icl_loss(
+            device=self.device,
+            tau=self.args.tau,
+            ab_weight=self.args.ab_weight,
+            n_view=2,
+            use_hard_negatives=self.args.use_hard_negatives,
+            hard_negative_k=self.args.hard_negative_k
+        )
         self.criterion_align = ial_loss(device=self.device, tau=self.args.tau2,
                                         ab_weight=self.args.ab_weight,
                                         zoom=self.args.zoom,

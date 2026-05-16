@@ -31,15 +31,22 @@ class CustomMultiLossLayer(nn.Module):
 
 class icl_loss(nn.Module):
 
-    def __init__(self, device, tau=0.05, ab_weight=0.5, n_view=2, intra_weight=1.0, inversion=False):
+    def __init__(self, device, tau=0.05, ab_weight=0.5, n_view=2, 
+                 intra_weight=1.0, inversion=False,
+                 use_hard_negatives=False,   # 新增
+                 hard_negative_k=50):         # 新增
         super(icl_loss, self).__init__()
         self.tau = tau
         self.device = device
         self.sim = cosine_sim
-        self.weight = ab_weight  # the factor of a->b and b<-a
+        self.weight = ab_weight
         self.n_view = n_view
-        self.intra_weight = intra_weight  # the factor of aa and bb
+        self.intra_weight = intra_weight
         self.inversion = inversion
+        
+        # 硬负采样参数
+        self.use_hard_negatives = use_hard_negatives
+        self.hard_negative_k = hard_negative_k
 
     def softXEnt(self, target, logits):
 
@@ -52,8 +59,8 @@ class icl_loss(nn.Module):
             emb = F.normalize(emb, dim=1)
             if emb2 is not None:
                 emb2 = F.normalize(emb2, dim=1)
+        
         num_ent = emb.shape[0]
-        # Get (normalized) hidden1 and hidden2.
         zis = emb[train_links[:, 0]]
         if emb2 is not None:
             zjs = emb2[train_links[:, 1]]
@@ -63,29 +70,63 @@ class icl_loss(nn.Module):
         temperature = self.tau
         alpha = self.weight
         n_view = self.n_view
-
         LARGE_NUM = 1e9
 
         hidden1, hidden2 = zis, zjs
         batch_size = hidden1.shape[0]
-
         hidden1_large = hidden1
         hidden2_large = hidden2
         num_classes = batch_size * n_view
+
+        # labels
         labels = F.one_hot(torch.arange(start=0, end=batch_size, dtype=torch.int64), num_classes=num_classes).float()
         labels = labels.to(self.device)
 
+        # masks
         masks = F.one_hot(torch.arange(start=0, end=batch_size, dtype=torch.int64), num_classes=batch_size)
         masks = masks.to(self.device).float()
-        logits_aa = torch.matmul(hidden1, torch.transpose(hidden1_large, 0, 1)) / temperature
-        logits_aa = logits_aa - masks * LARGE_NUM
-        logits_bb = torch.matmul(hidden2, torch.transpose(hidden2_large, 0, 1)) / temperature
-        logits_bb = logits_bb - masks * LARGE_NUM
+
+        # 计算 4 个相似度矩阵（共用，避免重复计算）
         logits_ab = torch.matmul(hidden1, torch.transpose(hidden2_large, 0, 1)) / temperature
         logits_ba = torch.matmul(hidden2, torch.transpose(hidden1_large, 0, 1)) / temperature
+        logits_aa = torch.matmul(hidden1, torch.transpose(hidden1_large, 0, 1)) / temperature
+        logits_bb = torch.matmul(hidden2, torch.transpose(hidden2_large, 0, 1)) / temperature
 
-        # logits_a = torch.cat([logits_ab, self.intra_weight*logits_aa], dim=1)
-        # logits_b = torch.cat([logits_ba, self.intra_weight*logits_bb], dim=1)
+        # ========== 硬负采样分支 ==========
+        if self.use_hard_negatives and self.hard_negative_k > 0:
+            # 向量化 Top-K 硬负采样（无 for 循环）
+            # 只对 logits_ab 和 logits_ba 进行硬负采样
+            # logits_aa 和 logits_bb 保持原样（对角线已 mask）
+            
+            # 1. 对 logits_ab：为每个样本找到 top-k 硬负样本
+            #    忽略正样本（对角线位置，但 ab 没有对角线问题，正样本在 cat 后的 [i, i] 位置）
+            #    实际上 ab 的正样本在 logits_ab[i, i]，需要 mask 掉
+            mask_pos_ab = torch.eye(batch_size, device=self.device).bool()
+            # 临时 mask 掉正样本，做 topk
+            logits_ab_for_topk = logits_ab.clone()
+            logits_ab_for_topk[mask_pos_ab] = -LARGE_NUM
+            # 取 top-k 硬负样本（最大的 k 个非正样本 logits）
+            _, topk_indices_ab = torch.topk(logits_ab_for_topk, self.hard_negative_k, dim=1)
+            # 构造硬负采样权重：top-k 位置为 1.5，其余为 1.0
+            hard_weight_ab = torch.ones_like(logits_ab) * 1.0
+            hard_weight_ab.scatter_(1, topk_indices_ab, 1.5)
+            # 应用权重
+            logits_ab = logits_ab * hard_weight_ab
+
+            # 2. 对 logits_ba：同理
+            mask_pos_ba = torch.eye(batch_size, device=self.device).bool()
+            logits_ba_for_topk = logits_ba.clone()
+            logits_ba_for_topk[mask_pos_ba] = -LARGE_NUM
+            _, topk_indices_ba = torch.topk(logits_ba_for_topk, self.hard_negative_k, dim=1)
+            hard_weight_ba = torch.ones_like(logits_ba) * 1.0
+            hard_weight_ba.scatter_(1, topk_indices_ba, 1.5)
+            logits_ba = logits_ba * hard_weight_ba
+
+        # 掩码自己（对角线）对于 aa 和 bb
+        logits_aa = logits_aa - masks * LARGE_NUM
+        logits_bb = logits_bb - masks * LARGE_NUM
+
+        # 拼接
         if self.inversion:
             logits_a = torch.cat([logits_ab, logits_bb], dim=1)
             logits_b = torch.cat([logits_ba, logits_aa], dim=1)
@@ -97,6 +138,7 @@ class icl_loss(nn.Module):
         loss_b = self.softXEnt(labels, logits_b)
 
         return alpha * loss_a + (1 - alpha) * loss_b
+
 
 
 class ial_loss(nn.Module):
