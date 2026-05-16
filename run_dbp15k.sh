@@ -1,3 +1,6 @@
+#!/bin/bash
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128"
+
 CUDA_VISIBLE_DEVICES=$1 python3 src/run.py \
     --file_dir data/DBP15K/$3 \
     --rate 0.3 \
