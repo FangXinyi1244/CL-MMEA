@@ -81,42 +81,33 @@ class icl_loss(nn.Module):
         
         # 修改：如果使用硬负采样，labels 不再是 one-hot，而是需要特殊处理
         if self.use_hard_negatives:
-            # 硬负采样模式：直接修改 logits，增强硬负样本的梯度
+            # 1. 计算相似度矩阵（与原版相同）
             logits_ab = torch.matmul(hidden1, torch.transpose(hidden2_large, 0, 1)) / temperature
             logits_ba = torch.matmul(hidden2, torch.transpose(hidden1_large, 0, 1)) / temperature
             logits_aa = torch.matmul(hidden1, torch.transpose(hidden1_large, 0, 1)) / temperature
             logits_bb = torch.matmul(hidden2, torch.transpose(hidden2_large, 0, 1)) / temperature
-            logits_aa = logits_aa - torch.eye(batch_size, device=self.device) * LARGE_NUM
-            logits_bb = logits_bb - torch.eye(batch_size, device=self.device) * LARGE_NUM
-
-            # ========== 硬负采样核心逻辑 ==========
-            # 1. 掩码掉正样本（对角线）
+            
+            # 2. 掩码掉自己（对角线）
             mask = torch.eye(batch_size, device=self.device)
             logits_aa = logits_aa - mask * LARGE_NUM
             logits_bb = logits_bb - mask * LARGE_NUM
             
-            # 2. 为 logits_ab 找出每个 anchor 的 top-K 硬负样本（向量化）
-            # 先掩码掉正样本
-            logits_ab_masked = logits_ab.clone()
-            logits_ab_masked = logits_ab_masked - mask * LARGE_NUM
+            # ========== 核心：软锐化（Soft Sharpening）==========
+            # 使用 sigmoid 函数自动强调高相似度（硬负样本）
+            # 高相似度 -> sigmoid 接近 1 -> 缩放因子接近 1.5
+            # 低相似度 -> sigmoid 接近 0 -> 缩放因子接近 1.0
             
-            # 向量化 topk：一次性找出所有行的硬负样本 [B, K]
-            k = min(self.hard_negative_k, batch_size - 1)
-            _, hard_neg_indices_ab = torch.topk(logits_ab_masked, k, dim=1)
+            # 对 logits_ab 应用软锐化
+            sigmoid_scaler_ab = torch.sigmoid(logits_ab * 5.0)  # 5.0 控制陡峭度
+            hard_weight_ab = 1.0 + 0.5 * sigmoid_scaler_ab  # 缩放范围：[1.0, 1.5]
+            logits_ab = logits_ab * hard_weight_ab
             
-            # 构造索引矩阵 [B, K]
-            batch_indices = torch.arange(batch_size, device=self.device).unsqueeze(1).expand(-1, k)
+            # 对 logits_ba 应用软锐化
+            sigmoid_scaler_ba = torch.sigmoid(logits_ba * 5.0)
+            hard_weight_ba = 1.0 + 0.5 * sigmoid_scaler_ba
+            logits_ba = logits_ba * hard_weight_ba
             
-            # 增强硬负样本的 logits（保留核心理念：只强化困难样本）
-            logits_ab[batch_indices, hard_neg_indices_ab] *= 1.5
-            
-            # 3. 同样处理 logits_ba（向量化）
-            logits_ba_masked = logits_ba.clone()
-            logits_ba_masked = logits_ba_masked - mask * LARGE_NUM
-            _, hard_neg_indices_ba = torch.topk(logits_ba_masked, k, dim=1)
-            logits_ba[batch_indices, hard_neg_indices_ba] *= 1.5
-            
-            # 4. 拼接 logits（与原逻辑一致）
+            # 3. 拼接 logits（与原逻辑一致）
             if self.inversion:
                 logits_a = torch.cat([logits_ab, logits_bb], dim=1)
                 logits_b = torch.cat([logits_ba, logits_aa], dim=1)
@@ -124,11 +115,10 @@ class icl_loss(nn.Module):
                 logits_a = torch.cat([logits_ab, logits_aa], dim=1)
                 logits_b = torch.cat([logits_ba, logits_bb], dim=1)
 
-            # 5. 使用交叉熵损失
+            # 4. 使用交叉熵损失
             labels = torch.arange(batch_size, device=self.device)
             loss_a = F.cross_entropy(logits_a, labels)
-            loss_b = F.cross_entropy(logits_b, labels)
-            
+            loss_b = F.cross_entropy(logits_b, labels)            
         else:
             # 原始逻辑（保持原有实现）
             masks = torch.eye(batch_size, device=self.device).float()
