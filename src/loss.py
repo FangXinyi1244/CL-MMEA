@@ -94,33 +94,30 @@ class icl_loss(nn.Module):
 
         # ========== 硬负采样分支 ==========
         if self.use_hard_negatives and self.hard_negative_k > 0:
-            # 向量化 Top-K 硬负采样（无 for 循环）
-            # 只对 logits_ab 和 logits_ba 进行硬负采样
-            # logits_aa 和 logits_bb 保持原样（对角线已 mask）
+            # 动态计算 k：确保 k <= batch_size - 1（减去正样本）
+            k = min(self.hard_negative_k, batch_size - 1)
             
-            # 1. 对 logits_ab：为每个样本找到 top-k 硬负样本
-            #    忽略正样本（对角线位置，但 ab 没有对角线问题，正样本在 cat 后的 [i, i] 位置）
-            #    实际上 ab 的正样本在 logits_ab[i, i]，需要 mask 掉
-            mask_pos_ab = torch.eye(batch_size, device=self.device).bool()
-            # 临时 mask 掉正样本，做 topk
-            logits_ab_for_topk = logits_ab.clone()
-            logits_ab_for_topk[mask_pos_ab] = -LARGE_NUM
-            # 取 top-k 硬负样本（最大的 k 个非正样本 logits）
-            _, topk_indices_ab = torch.topk(logits_ab_for_topk, self.hard_negative_k, dim=1)
-            # 构造硬负采样权重：top-k 位置为 1.5，其余为 1.0
-            hard_weight_ab = torch.ones_like(logits_ab) * 1.0
-            hard_weight_ab.scatter_(1, topk_indices_ab, 1.5)
-            # 应用权重
-            logits_ab = logits_ab * hard_weight_ab
+            # 如果 k 太小，跳过硬负采样
+            if k <= 0:
+                pass  # 不执行硬负采样
+            else:
+                # 1. 对 logits_ab：为每个样本找到 top-k 硬负样本
+                mask_pos_ab = torch.eye(batch_size, device=self.device).bool()
+                logits_ab_for_topk = logits_ab.clone()
+                logits_ab_for_topk[mask_pos_ab] = -LARGE_NUM
+                _, topk_indices_ab = torch.topk(logits_ab_for_topk, k, dim=1)
+                hard_weight_ab = torch.ones_like(logits_ab) * 1.0
+                hard_weight_ab.scatter_(1, topk_indices_ab, 1.5)
+                logits_ab = logits_ab * hard_weight_ab
 
-            # 2. 对 logits_ba：同理
-            mask_pos_ba = torch.eye(batch_size, device=self.device).bool()
-            logits_ba_for_topk = logits_ba.clone()
-            logits_ba_for_topk[mask_pos_ba] = -LARGE_NUM
-            _, topk_indices_ba = torch.topk(logits_ba_for_topk, self.hard_negative_k, dim=1)
-            hard_weight_ba = torch.ones_like(logits_ba) * 1.0
-            hard_weight_ba.scatter_(1, topk_indices_ba, 1.5)
-            logits_ba = logits_ba * hard_weight_ba
+                # 2. 对 logits_ba：同理
+                mask_pos_ba = torch.eye(batch_size, device=self.device).bool()
+                logits_ba_for_topk = logits_ba.clone()
+                logits_ba_for_topk[mask_pos_ba] = -LARGE_NUM
+                _, topk_indices_ba = torch.topk(logits_ba_for_topk, k, dim=1)
+                hard_weight_ba = torch.ones_like(logits_ba) * 1.0
+                hard_weight_ba.scatter_(1, topk_indices_ba, 1.5)
+                logits_ba = logits_ba * hard_weight_ba
 
         # 掩码自己（对角线）对于 aa 和 bb
         logits_aa = logits_aa - masks * LARGE_NUM

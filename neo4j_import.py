@@ -14,7 +14,7 @@ import os
 import sys
 import argparse
 from tqdm import tqdm
-from neo4j import GraphDatabase, IN_MEMORY
+from neo4j import GraphDatabase
 
 
 class Neo4jImporter:
