@@ -628,6 +628,78 @@ class MCLEA:
 
         print("[optimization finished!]")
         print("[total time elapsed: {:.4f} s]".format(time.time() - t_total))
+        
+        # 保存最终模型
+        self.save_model(epoch=self.args.epochs - 1, metric=None, is_best=False)
+
+    def save_model(self, epoch, metric=None, is_best=False):
+        """
+        保存模型参数到 pkl 文件夹
+        
+        Args:
+            epoch: 当前训练轮次
+            metric: 评估指标（如 hits@1），用于判断是否为最佳模型
+            is_best: 是否为最佳模型
+        """
+        import os
+        import torch
+        
+        # 创建 pkl 文件夹（如果不存在）
+        save_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pkl")
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        
+        # 构建保存文件名
+        dataset_name = os.path.basename(self.args.file_dir)
+        if is_best:
+            model_filename = f"best_model_{dataset_name}.pkl"
+        else:
+            model_filename = f"model_epoch_{epoch}_{dataset_name}.pkl"
+        
+        save_path = os.path.join(save_dir, model_filename)
+        
+        # 构建保存字典
+        save_dict = {
+            # 模型参数
+            'multimodal_encoder': self.multimodal_encoder.state_dict(),
+            'multi_loss_layer': self.multi_loss_layer.state_dict(),
+            'align_multi_loss_layer': self.align_multi_loss_layer.state_dict(),
+            # 优化器参数（可选，用于继续训练）
+            'optimizer': self.optimizer.state_dict(),
+            # 训练配置
+            'args': vars(self.args),
+            # 当前轮次
+            'epoch': epoch,
+            # 评估指标
+            'metric': metric,
+        }
+        
+        # 保存
+        torch.save(save_dict, save_path)
+        print(f"[Model saved to {save_path}]")
+
+    @staticmethod
+    def load_model(model_path, device=None):
+        """
+        加载已保存的模型
+        
+        Args:
+            model_path: 模型文件路径
+            device: 设备（cpu 或 cuda）
+        
+        Returns:
+            model_dict: 包含模型和相关信息的字典
+        """
+        import torch
+        import os
+        
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # 加载保存的字典
+        save_dict = torch.load(model_path, map_location=device)
+        
+        return save_dict
 
     def test(self, epoch):
         with torch.no_grad():

@@ -9,4 +9,6 @@ __pycache__/
 
 save_pkl/
 
+pkl/
+
 .vscode/
