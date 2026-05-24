@@ -51,24 +51,26 @@ def demo_inference(model_path, file_dir, cuda=False):
     
     # 加载保存的字典
     save_dict = torch.load(model_path, map_location=device)
-    
-    # 显示保存的配置信息
     saved_args = save_dict['args']
-    print(f"✓ Model loaded from: {model_path}")
-    print(f"  - Dataset: {saved_args.get('file_dir', 'N/A')}")
-    print(f"  - Epochs: {saved_args.get('epochs', 'N/A')}")
-    print(f"  - Learning rate: {saved_args.get('lr', 'N/A')}")
-    print(f"  - Saved at epoch: {save_dict.get('epoch', 'N/A')}")
-    if save_dict.get('metric') is not None:
-        print(f"  - Metric (hits@1): {save_dict['metric']:.4f}")
     
-    # ========== 2. 初始化模型并加载参数 ==========
-    print("\n" + "-" * 60)
-    print("[Step 2] Initializing model architecture...")
-    print("-" * 60)
+    # 将保存的参数转换为命令行参数
+    import sys
+    original_argv = sys.argv[:]
     
-    # 创建 MCLEA 实例（会加载数据）
+    # 构建命令行参数
+    sys.argv = ['demo.py']
+    for key, value in saved_args.items():
+        if isinstance(value, bool):
+            if value:
+                sys.argv.append(f'--{key}')
+        else:
+            sys.argv.append(f'--{key}={value}')
+    
+    # 初始化模型（现在会使用正确的参数）
     model = MCLEA()
+    
+    # 恢复原始 argv
+    sys.argv = original_argv
     
     # 加载保存的参数
     print("Loading parameters...")
