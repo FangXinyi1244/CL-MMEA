@@ -1,3 +1,7 @@
 torch==1.7.0
 scipy==1.5.2
 numpy==1.19.2
+flask==2.0.0
+flask-cors==3.0.10
+neo4j-driver==4.4.0
+tqdm
